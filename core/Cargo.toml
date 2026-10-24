@@ -1,0 +1,36 @@
+[package]
+name = "filesync-core"
+version = "0.1.0"
+edition = "2021"
+authors = ["FileSync Team"]
+description = "High-performance native file sharing core engine for Android and Windows"
+
+[lib]
+name = "filesync_core"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tokio = { version = "1.43", features = ["full"] }
+bytes = "1.10"
+blake3 = { version = "1.6", features = ["rayon", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+crc32fast = "1.4"
+socket2 = "0.5"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Time",
+] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.17"
