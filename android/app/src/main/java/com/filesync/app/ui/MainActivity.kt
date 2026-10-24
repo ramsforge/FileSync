@@ -2,19 +2,21 @@ package com.filesync.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.lifecycle.lifecycleScope
 import com.filesync.app.core.TransferItem
+import com.filesync.app.network.TransferSenderClient
 import com.filesync.app.service.TransferForegroundService
 import com.filesync.app.ui.screens.HomeScreen
 import com.filesync.app.ui.theme.FileSyncTheme
 import com.filesync.app.util.StorageHelper
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -35,6 +37,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Ensure receiver service is active in background
+        val serviceIntent = Intent(this, TransferForegroundService::class.java).apply {
+            action = TransferForegroundService.ACTION_START
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
+        }
 
         // Handle Share Sheet intent if launched from another app
         handleIncomingIntent(intent)
@@ -134,73 +146,63 @@ class MainActivity : ComponentActivity() {
 
         isTransferring = true
         val totalBytes = queue.filter { !it.isDirectory }.sumOf { it.size }
-        var transferred = 0L
+        transferredText = "0 MB / ${formatBytes(totalBytes)}"
+        currentSpeed = "Connecting..."
+        etaText = "--"
 
-        // Start Background Foreground Service to maintain WakeLock and Wi-Fi performance
-        val serviceIntent = Intent(this, TransferForegroundService::class.java).apply {
-            action = TransferForegroundService.ACTION_START
-        }
-        startService(serviceIntent)
+        val client = TransferSenderClient(this)
 
         lifecycleScope.launch {
-            for (item in queue) {
-                if (!isTransferring) break
+            try {
+                // USB ADB tunnel connects to Windows port 45781 via adb reverse
+                val host = "127.0.0.1"
+                val port = 45781
 
-                item.status = "InProgress"
-                val itemBytes = item.size
-                var itemTransferred = 0L
-                val steps = 10
-                val stepBytes = (itemBytes / steps).coerceAtLeast(1)
+                val success = client.sendFiles(host, port, queue.toList()) { percent, speed, fileName, transferred, total ->
+                    totalProgress = percent / 100f
+                    currentSpeed = speed
+                    transferredText = "${formatBytes(transferred)} / ${formatBytes(total)}"
 
-                for (s in 0 until steps) {
-                    if (!isTransferring) break
-                    delay(40)
+                    val remainingBytes = (total - transferred).coerceAtLeast(0)
+                    etaText = if (speed.contains("MB/s") || speed.contains("GB/s")) "< 5s" else "--"
 
-                    itemTransferred = (itemTransferred + stepBytes).coerceAtMost(itemBytes)
-                    item.progress = itemTransferred.toFloat() / itemBytes.coerceAtLeast(1)
-
-                    val currentTotal = transferred + itemTransferred
-                    totalProgress = currentTotal.toFloat() / totalBytes.coerceAtLeast(1)
-
-                    currentSpeed = "415.2 MB/s"
-                    transferredText = "${formatBytes(currentTotal)} / ${formatBytes(totalBytes)}"
-                    etaText = "< 4s"
-
-                    // Update live Notification
                     val updateIntent = Intent(this@MainActivity, TransferForegroundService::class.java).apply {
                         action = TransferForegroundService.ACTION_UPDATE
-                        putExtra(TransferForegroundService.EXTRA_PROGRESS, (totalProgress * 100).toInt())
-                        putExtra(TransferForegroundService.EXTRA_SPEED, currentSpeed)
-                        putExtra(TransferForegroundService.EXTRA_FILE_NAME, item.name)
+                        putExtra(TransferForegroundService.EXTRA_PROGRESS, percent)
+                        putExtra(TransferForegroundService.EXTRA_SPEED, speed)
+                        putExtra(TransferForegroundService.EXTRA_FILE_NAME, fileName)
                     }
                     startService(updateIntent)
                 }
 
-                transferred += itemBytes
-                item.status = "Completed"
-                item.progress = 1f
+                if (success) {
+                    currentSpeed = "0 MB/s"
+                    etaText = "Complete"
+                    totalProgress = 1f
+                    for (item in queue) {
+                        item.status = "Completed"
+                        item.progress = 1f
+                    }
+                    Toast.makeText(this@MainActivity, "Files sent to Windows successfully!", Toast.LENGTH_LONG).show()
+                } else {
+                    currentSpeed = "0 MB/s"
+                    etaText = "Failed"
+                    Toast.makeText(this@MainActivity, "Transfer failed or peer disconnected.", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                currentSpeed = "0 MB/s"
+                etaText = "Error"
+                Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
+            } finally {
+                isTransferring = false
             }
-
-            isTransferring = false
-            currentSpeed = "0 MB/s"
-            etaText = "Done"
-
-            // Stop Foreground Service
-            val stopIntent = Intent(this@MainActivity, TransferForegroundService::class.java).apply {
-                action = TransferForegroundService.ACTION_STOP
-            }
-            startService(stopIntent)
         }
     }
 
     private fun cancelTransfer() {
         isTransferring = false
         currentSpeed = "0 MB/s"
-
-        val stopIntent = Intent(this, TransferForegroundService::class.java).apply {
-            action = TransferForegroundService.ACTION_STOP
-        }
-        startService(stopIntent)
+        etaText = "Cancelled"
     }
 
     private fun formatBytes(bytes: Long): String {
@@ -208,8 +210,7 @@ class MainActivity : ComponentActivity() {
         var len = bytes.toDouble()
         var order = 0
         while (len >= 1024 && order < units.size - 1) {
-            order++
-            len /= 1024
+            order++; len /= 1024
         }
         return String.format("%.2f %s", len, units[order])
     }

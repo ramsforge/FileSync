@@ -11,7 +11,9 @@ import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import com.filesync.app.network.TransferReceiverServer
 import com.filesync.app.ui.MainActivity
 
 class TransferForegroundService : Service() {
@@ -19,6 +21,7 @@ class TransferForegroundService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private lateinit var notificationManager: NotificationManager
+    private var receiverServer: TransferReceiverServer? = null
 
     companion object {
         const val CHANNEL_ID = "filesync_transfer_channel"
@@ -56,12 +59,23 @@ class TransferForegroundService : Service() {
             setReferenceCounted(false)
             acquire()
         }
+
+        // 3. Start High-Speed Network Receiver Server on Port 45780
+        receiverServer = TransferReceiverServer(this).apply {
+            onProgressChanged = { percent, speed, fileName ->
+                notificationManager.notify(NOTIFICATION_ID, buildNotification(percent, speed, fileName))
+            }
+            onStatusChanged = { status ->
+                Log.i("TransferService", status)
+            }
+            start(TransferReceiverServer.DEFAULT_PORT)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
-                val notification = buildNotification(0, "0 MB/s", "Initializing transfer...")
+                val notification = buildNotification(0, "Ready", "Listening on port 45780...")
                 startForeground(NOTIFICATION_ID, notification)
             }
             ACTION_UPDATE -> {
@@ -75,8 +89,21 @@ class TransferForegroundService : Service() {
                 stopSelf()
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
+
+    override fun onDestroy() {
+        receiverServer?.stop()
+        wakeLock?.let {
+            if (it.isHeld) it.release()
+        }
+        wifiLock?.let {
+            if (it.isHeld) it.release()
+        }
+        super.onDestroy()
+    }
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     private fun buildNotification(progress: Int, speed: String, fileName: String): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
@@ -99,9 +126,9 @@ class TransferForegroundService : Service() {
             .setContentTitle("FileSync: $speed")
             .setContentText(fileName)
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setProgress(100, progress, false)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
-            .setProgress(100, progress, false)
             .setContentIntent(pendingIntent)
             .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Cancel", stopPendingIntent)
             .build()
@@ -111,21 +138,13 @@ class TransferForegroundService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "File Transfers",
+                "FileSync High-Speed Transfers",
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Shows active transfer progress and line-rate speeds"
+                description = "Shows real-time status and throughput of file transfers"
                 setShowBadge(false)
             }
             notificationManager.createNotificationChannel(channel)
         }
     }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        wakeLock?.let { if (it.isHeld) it.release() }
-        wifiLock?.let { if (it.isHeld) it.release() }
-    }
-
-    override fun onBind(intent: Intent?): IBinder? = null
 }

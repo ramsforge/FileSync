@@ -13,6 +13,9 @@ public partial class MainViewModel : ObservableObject
 {
     private readonly AdbService _adbService;
     private readonly ExplorerMenuService _explorerMenuService;
+    private readonly TransferClient _transferClient;
+    private readonly TransferServer _transferServer;
+    private CancellationTokenSource? _transferCts;
 
     [ObservableProperty]
     private string _coreVersion = "Loading...";
@@ -46,14 +49,32 @@ public partial class MainViewModel : ObservableObject
 
     public MainViewModel()
     {
+        App.Trace("MainViewModel..ctor started");
         _adbService = new AdbService();
         _explorerMenuService = new ExplorerMenuService();
+        _transferClient = new TransferClient();
+        _transferServer = new TransferServer();
 
+        _transferServer.StatusChanged += msg =>
+        {
+            App.Current?.Dispatcher.Invoke(() => StatusMessage = msg);
+        };
+        _transferServer.FileReceived += (name, path) =>
+        {
+            App.Current?.Dispatcher.Invoke(() => StatusMessage = $"Received: {name}");
+        };
+        _transferServer.Start(45781);
+
+        App.Trace("MainViewModel..ctor calling GetCoreVersion");
         CoreVersion = CoreBridge.GetCoreVersion();
+        App.Trace($"MainViewModel..ctor CoreVersion={CoreVersion}");
+
         IsContextMenuEnabled = _explorerMenuService.IsContextMenuRegistered();
+        App.Trace("MainViewModel..ctor calling ScanDevices");
 
         // Seed with local discovery placeholder / USB status
         ScanDevices();
+        App.Trace("MainViewModel..ctor completed");
     }
 
     [RelayCommand]
@@ -81,33 +102,65 @@ public partial class MainViewModel : ObservableObject
 
     private async Task CheckUsbDevicesAsync()
     {
-        var devices = await _adbService.GetConnectedDevicesAsync();
-        foreach (var dev in devices)
+        try
         {
-            AvailableDevices.Insert(0, new PeerDevice
+            var devices = await _adbService.GetConnectedDevicesAsync();
+            if (devices.Count == 0) return;
+
+            void UpdateList()
             {
-                Name = $"Android Device ({dev})",
-                OsName = "Android",
-                EndPoint = "127.0.0.1:45780",
-                ConnectionType = "USB ADB Tunnel"
-            });
-            SelectedDevice = AvailableDevices[0];
+                foreach (var dev in devices)
+                {
+                    if (!AvailableDevices.Any(d => d.EndPoint == "127.0.0.1:45780"))
+                    {
+                        AvailableDevices.Insert(0, new PeerDevice
+                        {
+                            Name = $"Samsung Device ({dev})",
+                            OsName = "Android",
+                            EndPoint = "127.0.0.1:45780",
+                            ConnectionType = "USB ADB Tunnel"
+                        });
+                    }
+                }
+                if (AvailableDevices.Count > 0)
+                {
+                    SelectedDevice = AvailableDevices[0];
+                }
+            }
+
+            var dispatcher = App.Current?.Dispatcher;
+            if (dispatcher != null)
+            {
+                if (dispatcher.CheckAccess())
+                {
+                    UpdateList();
+                }
+                else
+                {
+                    dispatcher.Invoke(UpdateList);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("Error checking USB devices: " + ex);
         }
     }
 
     [RelayCommand]
     public async Task ConnectUsbAdbAsync()
     {
-        StatusMessage = "Setting up ADB reverse tunnel on port 45780...";
-        var success = await _adbService.SetupAdbReverseAsync(45780);
-        if (success)
+        StatusMessage = "Setting up ADB high-speed USB tunnels...";
+        var forwardOk = await _adbService.SetupAdbForwardAsync(45782, 45780);
+        var reverseOk = await _adbService.SetupAdbReverseAsync(45781);
+        if (forwardOk || reverseOk)
         {
-            StatusMessage = "ADB Reverse Tunnel established! High-speed USB active.";
+            StatusMessage = "ADB High-Speed USB Tunnels established (Forward: 45782, Reverse: 45781)!";
             await CheckUsbDevicesAsync();
         }
         else
         {
-            StatusMessage = "Could not setup ADB reverse. Ensure USB debugging is enabled on phone.";
+            StatusMessage = "Could not setup ADB tunnels. Ensure USB debugging is enabled on tablet.";
         }
     }
 
@@ -204,59 +257,81 @@ public partial class MainViewModel : ObservableObject
         }
 
         IsTransferring = true;
-        StatusMessage = $"Streaming at line-rate to {SelectedDevice.Name} via {SelectedDevice.ConnectionType}...";
+        _transferCts = new CancellationTokenSource();
 
-        long totalBytes = Queue.Where(i => !i.IsDirectory).Sum(i => i.Size);
-        long transferredBytes = 0;
+        string host;
+        int port;
 
-        // Simulate high-speed pipeline progress or invoke CoreBridge
-        for (int i = 0; i < Queue.Count; i++)
+        if (SelectedDevice.EndPoint.Contains("127.0.0.1") || SelectedDevice.ConnectionType.Contains("USB"))
         {
-            if (!IsTransferring) break;
-
-            var item = Queue[i];
-            item.Status = "InProgress";
-
-            long itemBytes = item.Size;
-            long currentItemTransferred = 0;
-            int steps = 10;
-            long stepBytes = Math.Max(1, itemBytes / steps);
-
-            for (int s = 0; s < steps; s++)
-            {
-                if (!IsTransferring) break;
-                await Task.Delay(40); // 40ms simulation step
-
-                currentItemTransferred += stepBytes;
-                if (currentItemTransferred > itemBytes) currentItemTransferred = itemBytes;
-
-                item.Progress = (double)currentItemTransferred / Math.Max(1, itemBytes) * 100.0;
-
-                long currentTotal = transferredBytes + currentItemTransferred;
-                TotalProgress = (double)currentTotal / Math.Max(1, totalBytes) * 100.0;
-
-                // High speed representation
-                CurrentSpeedText = $"{425.8:0.0} MB/s";
-                TransferredBytesText = $"{FormatBytes(currentTotal)} / {FormatBytes(totalBytes)}";
-                EtaText = "< 5s";
-            }
-
-            transferredBytes += itemBytes;
-            item.Status = "Completed";
-            item.Progress = 100.0;
+            // USB Mode: ensure ADB forward port is active
+            await _adbService.SetupAdbForwardAsync(45782, 45780);
+            host = "127.0.0.1";
+            port = 45782;
+            StatusMessage = $"Connecting to {SelectedDevice.Name} via USB ADB tunnel (port {port})...";
+        }
+        else
+        {
+            var parts = SelectedDevice.EndPoint.Split(':');
+            host = parts[0];
+            port = parts.Length > 1 ? int.Parse(parts[1]) : 45780;
+            StatusMessage = $"Connecting to {SelectedDevice.Name} via Wi-Fi LAN ({host}:{port})...";
         }
 
-        IsTransferring = false;
-        CurrentSpeedText = "0 MB/s";
-        EtaText = "Complete";
-        StatusMessage = "Transfer completed successfully with bit-for-bit BLAKE3 verification!";
+        try
+        {
+            var itemsToSend = Queue.ToList();
+            bool success = await _transferClient.SendFilesAsync(
+                host,
+                port,
+                itemsToSend,
+                report =>
+                {
+                    App.Current?.Dispatcher.Invoke(() =>
+                    {
+                        if (report.CurrentFileIndex >= 0 && report.CurrentFileIndex < Queue.Count)
+                        {
+                            Queue[report.CurrentFileIndex].Progress = report.CurrentFileProgress;
+                        }
+                        TotalProgress = report.TotalProgress;
+                        CurrentSpeedText = report.FormattedSpeed;
+                        TransferredBytesText = $"{FormatBytes(report.TotalBytesTransferred)} / {FormatBytes(report.TotalBytes)}";
+                        EtaText = report.FormattedEta;
+                        if (!string.IsNullOrEmpty(report.StatusMessage))
+                        {
+                            StatusMessage = report.StatusMessage;
+                        }
+                    });
+                },
+                _transferCts.Token);
+
+            if (success)
+            {
+                StatusMessage = "Transfer completed successfully with bit-for-bit fidelity and exact timestamps!";
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            StatusMessage = "Transfer was cancelled by user.";
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Transfer error: {ex.Message}";
+        }
+        finally
+        {
+            IsTransferring = false;
+            CurrentSpeedText = "0 MB/s";
+            _transferCts = null;
+        }
     }
 
     [RelayCommand]
     public void CancelTransfer()
     {
+        _transferCts?.Cancel();
         IsTransferring = false;
-        StatusMessage = "Transfer cancelled by user.";
+        StatusMessage = "Transfer cancelled.";
         CurrentSpeedText = "0 MB/s";
     }
 

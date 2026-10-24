@@ -1,27 +1,42 @@
+using System;
+using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 
 namespace FileSync.App.Views;
 
-public partial class MainWindow
+public partial class MainWindow : Window
 {
     public MainWindow()
     {
-        InitializeComponent();
+        App.Trace("MainWindow..ctor started");
+        try
+        {
+            InitializeComponent();
+            App.Trace("MainWindow.InitializeComponent finished");
+        }
+        catch (Exception ex)
+        {
+            App.Trace($"MainWindow.InitializeComponent EXCEPTION: {ex}");
+            throw;
+        }
 
-        // Process any command line arguments (e.g. from Explorer right-click context menu)
+        Loaded += (s, e) => App.Trace("MainWindow.Loaded fired");
+
         var args = Environment.GetCommandLineArgs();
         if (args.Length > 1)
         {
-            var files = args.Skip(1).Where(System.IO.File.Exists).ToList();
-            var dirs = args.Skip(1).Where(System.IO.Directory.Exists).ToList();
+            var files = args.Skip(1).Where(File.Exists).ToList();
+            var dirs = args.Skip(1).Where(Directory.Exists).ToList();
             var all = files.Concat(dirs);
             if (all.Any())
             {
                 ViewModel.AddItemsFromPaths(all);
             }
         }
+        App.Trace("MainWindow..ctor completed");
     }
 
     private void DropZone_DragOver(object sender, DragEventArgs e)
@@ -47,7 +62,7 @@ public partial class MainWindow
         if (sender is Border border)
         {
             border.BorderBrush = new SolidColorBrush(Color.FromArgb(0x40, 0xFF, 0xFF, 0xFF));
-            border.Background = new SolidColorBrush(Color.FromArgb(0x0C, 0xFF, 0xFF, 0xFF));
+            border.Background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
         }
     }
 
@@ -57,10 +72,10 @@ public partial class MainWindow
 
         if (e.Data.GetDataPresent(DataFormats.FileDrop))
         {
-            var files = (string[]?)e.Data.GetData(DataFormats.FileDrop);
-            if (files != null && files.Length > 0)
+            var paths = (string[]?)e.Data.GetData(DataFormats.FileDrop);
+            if (paths != null && paths.Length > 0)
             {
-                ViewModel.AddItemsFromPaths(files);
+                ViewModel.AddItemsFromPaths(paths);
             }
         }
     }

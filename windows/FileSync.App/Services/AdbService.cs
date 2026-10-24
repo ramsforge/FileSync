@@ -79,7 +79,7 @@ public class AdbService
         }
     }
 
-    public async Task<bool> SetupAdbReverseAsync(int port = 45780)
+    public async Task<bool> SetupAdbReverseAsync(int port = 45781)
     {
         var adb = GetAdbPath();
         if (adb == null) return false;
@@ -87,6 +87,22 @@ public class AdbService
         try
         {
             var output = await RunAdbAsync($"reverse tcp:{port} tcp:{port}");
+            return !output.Contains("error", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public async Task<bool> SetupAdbForwardAsync(int localPort = 45782, int remotePort = 45780)
+    {
+        var adb = GetAdbPath();
+        if (adb == null) return false;
+
+        try
+        {
+            var output = await RunAdbAsync($"forward tcp:{localPort} tcp:{remotePort}");
             return !output.Contains("error", StringComparison.OrdinalIgnoreCase);
         }
         catch
@@ -114,8 +130,9 @@ public class AdbService
         };
 
         process.Start();
-        var output = await process.StandardOutput.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        return output;
+        var outputTask = process.StandardOutput.ReadToEndAsync();
+        var errorTask = process.StandardError.ReadToEndAsync();
+        await Task.WhenAll(outputTask, errorTask, process.WaitForExitAsync());
+        return await outputTask;
     }
 }
