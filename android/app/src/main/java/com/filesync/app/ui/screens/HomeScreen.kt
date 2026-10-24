@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -26,6 +27,8 @@ import com.filesync.app.core.TransferItem
 import com.filesync.app.ui.theme.*
 import com.filesync.app.util.StorageHelper
 import android.content.Intent
+import android.os.Environment
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.core.content.FileProvider
 import java.io.File
 
@@ -34,13 +37,16 @@ import java.io.File
 fun HomeScreen(
     queue: List<TransferItem>,
     receivedFiles: List<ReceivedItem>,
+    outputDirectory: String = "",
     isTransferring: Boolean,
     currentSpeed: String,
     totalProgress: Float,
     transferredText: String,
     etaText: String,
     onAddFilesClick: () -> Unit,
+    onChangeOutputDirectoryClick: () -> Unit = {},
     onClearQueueClick: () -> Unit,
+    onClearCompletedClick: () -> Unit = {},
     onStartTransferClick: () -> Unit,
     onCancelTransferClick: () -> Unit
 ) {
@@ -270,6 +276,9 @@ fun HomeScreen(
 
             if (currentTab == 0) {
                 // Outgoing Queue
+                val pendingCount = queue.count { it.status != "Completed" }
+                val completedCount = queue.count { it.status == "Completed" }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -278,14 +287,26 @@ fun HomeScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "Files to send to PC (${queue.size})",
+                        text = if (completedCount > 0 && pendingCount > 0)
+                            "$pendingCount pending, $completedCount sent"
+                        else if (completedCount > 0)
+                            "All $completedCount file(s) sent to PC"
+                        else
+                            "Files to send to PC (${queue.size})",
                         fontWeight = FontWeight.Medium,
                         fontSize = 13.sp,
                         color = TextSecondary
                     )
-                    if (queue.isNotEmpty() && !isTransferring) {
-                        TextButton(onClick = onClearQueueClick) {
-                            Text("Clear All", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (completedCount > 0 && !isTransferring) {
+                            TextButton(onClick = onClearCompletedClick) {
+                                Text("Clear Sent", color = SecondaryBlue, fontSize = 13.sp)
+                            }
+                        }
+                        if (queue.isNotEmpty() && !isTransferring) {
+                            TextButton(onClick = onClearQueueClick) {
+                                Text("Clear All", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                            }
                         }
                     }
                 }
@@ -327,8 +348,13 @@ fun HomeScreen(
                         verticalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         items(queue) { item ->
+                            val isItemCompleted = item.status == "Completed"
+                            val isItemInProgress = item.status == "InProgress"
+
                             Card(
-                                colors = CardDefaults.cardColors(containerColor = CardDark),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = if (isItemCompleted) CardDark.copy(alpha = 0.8f) else CardDark
+                                ),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
                                 Column(modifier = Modifier.padding(12.dp)) {
@@ -342,9 +368,18 @@ fun HomeScreen(
                                             modifier = Modifier.weight(1f)
                                         ) {
                                             Icon(
-                                                imageVector = if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                                                imageVector = when {
+                                                    isItemCompleted -> Icons.Default.CheckCircle
+                                                    item.isDirectory -> Icons.Default.Folder
+                                                    else -> Icons.Default.InsertDriveFile
+                                                },
                                                 contentDescription = null,
-                                                tint = if (item.isDirectory) SecondaryBlue else TextSecondary,
+                                                tint = when {
+                                                    isItemCompleted -> AccentGreen
+                                                    isItemInProgress -> SecondaryBlue
+                                                    item.isDirectory -> SecondaryBlue
+                                                    else -> TextSecondary
+                                                },
                                                 modifier = Modifier.size(24.dp)
                                             )
                                             Spacer(modifier = Modifier.width(8.dp))
@@ -363,14 +398,18 @@ fun HomeScreen(
                                             }
                                         }
                                         Text(
-                                            text = item.status,
+                                            text = if (isItemCompleted) "Sent" else item.status,
                                             fontSize = 12.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            color = if (item.status == "Completed") AccentGreen else SecondaryBlue
+                                            color = when {
+                                                isItemCompleted -> AccentGreen
+                                                isItemInProgress -> SecondaryBlue
+                                                else -> TextSecondary
+                                            }
                                         )
                                     }
 
-                                    if (item.status == "InProgress") {
+                                    if (isItemInProgress) {
                                         Spacer(modifier = Modifier.height(8.dp))
                                         LinearProgressIndicator(
                                             progress = { item.progress },
@@ -389,6 +428,101 @@ fun HomeScreen(
                 }
             } else {
                 // Received Files Tab
+                Card(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 10.dp),
+                    colors = CardDefaults.cardColors(containerColor = CardDark),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, BorderColor)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                            Text(
+                                text = "Save received files to:",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = TextSecondary
+                            )
+                            val displayPath = if (outputDirectory.isNotEmpty()) {
+                                outputDirectory.replace(
+                                    Environment.getExternalStorageDirectory().absolutePath,
+                                    "Internal Storage"
+                                )
+                            } else {
+                                "Downloads/FileSync"
+                            }
+                            Text(
+                                text = displayPath,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = TextPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            OutlinedButton(
+                                onClick = onChangeOutputDirectoryClick,
+                                modifier = Modifier.height(32.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
+                                shape = RoundedCornerShape(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(13.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Change", fontSize = 12.sp)
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
+                            IconButton(
+                                onClick = { StorageHelper.openReceivedFolder(context, outputDirectory) },
+                                modifier = Modifier.size(32.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.FolderOpen,
+                                    contentDescription = "Open Folder",
+                                    tint = SecondaryBlue,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Received from PC (${receivedFiles.size})",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        color = TextSecondary
+                    )
+                    TextButton(onClick = { StorageHelper.openReceivedFolder(context, outputDirectory) }) {
+                        Icon(
+                            imageVector = Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = SecondaryBlue
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Open in Files", color = SecondaryBlue, fontSize = 13.sp)
+                    }
+                }
+
                 if (receivedFiles.isEmpty()) {
                     Box(
                         modifier = Modifier
@@ -428,7 +562,12 @@ fun HomeScreen(
                         items(receivedFiles) { item ->
                             Card(
                                 colors = CardDefaults.cardColors(containerColor = CardDark),
-                                shape = RoundedCornerShape(8.dp)
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        StorageHelper.openFile(context, File(item.path))
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier
@@ -456,11 +595,20 @@ fun HomeScreen(
                                                 color = TextPrimary
                                             )
                                             Text(
-                                                text = "${item.formattedSize} • Saved to Downloads/FileSync",
+                                                text = "${item.formattedSize} • Tap to open",
                                                 fontSize = 11.sp,
                                                 color = AccentGreen
                                             )
                                         }
+                                    }
+                                    IconButton(onClick = {
+                                        StorageHelper.openFile(context, File(item.path))
+                                    }) {
+                                        Icon(
+                                            imageVector = Icons.Default.OpenInNew,
+                                            contentDescription = "Open",
+                                            tint = SecondaryBlue
+                                        )
                                     }
                                 }
                             }
@@ -470,6 +618,11 @@ fun HomeScreen(
             }
 
             // 5. Bottom Actions
+            val pendingCount = queue.count { it.status != "Completed" }
+            val completedCount = queue.count { it.status == "Completed" }
+            val hasPending = pendingCount > 0
+            val allCompleted = completedCount > 0 && pendingCount == 0
+
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -488,21 +641,41 @@ fun HomeScreen(
 
                 Button(
                     onClick = {
-                        if (isTransferring) onCancelTransferClick() else onStartTransferClick()
+                        when {
+                            isTransferring -> onCancelTransferClick()
+                            allCompleted -> onAddFilesClick()
+                            else -> onStartTransferClick()
+                        }
                     },
                     modifier = Modifier.weight(1.5f),
                     shape = RoundedCornerShape(8.dp),
                     colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isTransferring) MaterialTheme.colorScheme.error else PrimaryBlue
+                        containerColor = when {
+                            isTransferring -> MaterialTheme.colorScheme.error
+                            allCompleted -> AccentGreen
+                            else -> PrimaryBlue
+                        }
                     )
                 ) {
                     Icon(
-                        imageVector = if (isTransferring) Icons.Default.Close else Icons.Default.Send,
+                        imageVector = when {
+                            isTransferring -> Icons.Default.Close
+                            allCompleted -> Icons.Default.Check
+                            else -> Icons.Default.Send
+                        },
                         contentDescription = null,
                         modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text(if (isTransferring) "Cancel" else "Send to PC", fontWeight = FontWeight.Bold)
+                    Text(
+                        text = when {
+                            isTransferring -> "Cancel"
+                            allCompleted -> "All Sent (+ Add More)"
+                            hasPending -> "Send to PC ($pendingCount)"
+                            else -> "Send to PC"
+                        },
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }

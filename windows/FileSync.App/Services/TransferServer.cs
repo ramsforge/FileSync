@@ -12,7 +12,21 @@ public class TransferServer
 {
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
-    private readonly string _saveDirectory;
+    private string _saveDirectory;
+
+    public string SaveDirectory
+    {
+        get => _saveDirectory;
+        set
+        {
+            _saveDirectory = value;
+            try
+            {
+                Directory.CreateDirectory(_saveDirectory);
+            }
+            catch { }
+        }
+    }
 
     public event Action<string, string>? FileReceived; // (fileName, fullPath)
     public event Action<string>? StatusChanged;
@@ -97,8 +111,9 @@ public class TransferServer
                 var ackFrame = new Frame(MessageType.ManifestAck, new byte[] { 1 });
                 await ackFrame.WriteToStreamAsync(stream, ct);
 
-                // Open active files map
-                var activeFiles = new Dictionary<int, (FileStream Stream, string DestPath, FileEntryDto Entry)>();
+                // Open active files map: (Stream, PartPath, FinalDestPath, Entry)
+                var activeFiles = new Dictionary<int, (FileStream Stream, string PartPath, string FinalDestPath, FileEntryDto Entry)>();
+                string fullSaveDir = Path.GetFullPath(_saveDirectory);
 
                 for (int i = 0; i < manifest.Entries.Count; i++)
                 {
@@ -107,19 +122,25 @@ public class TransferServer
                                                           .Replace('\\', Path.DirectorySeparatorChar)
                                                           .TrimStart(Path.DirectorySeparatorChar);
 
-                    string destPath = Path.Combine(_saveDirectory, sanitizedRel);
+                    string destPath = Path.GetFullPath(Path.Combine(_saveDirectory, sanitizedRel));
+                    if (!destPath.StartsWith(fullSaveDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        throw new System.Security.SecurityException($"Invalid path traversal attempt: {entry.RelativePath}");
+                    }
+
                     string? dir = Path.GetDirectoryName(destPath);
                     if (!string.IsNullOrEmpty(dir))
                     {
                         Directory.CreateDirectory(dir);
                     }
 
-                    var fs = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous);
+                    string partPath = destPath + ".part";
+                    var fs = new FileStream(partPath, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 1024, FileOptions.Asynchronous);
                     if (entry.Size > 0)
                     {
                         fs.SetLength(entry.Size); // Pre-allocate contiguous disk space
                     }
-                    activeFiles[entry.FileIndex] = (fs, destPath, entry);
+                    activeFiles[entry.FileIndex] = (fs, partPath, destPath, entry);
                 }
 
                 // 3. Receive Chunks
@@ -152,23 +173,30 @@ public class TransferServer
                                 await fileInfo.Stream.FlushAsync(ct);
                                 fileInfo.Stream.Dispose();
 
+                                // Rename .part to final destination
+                                if (File.Exists(fileInfo.FinalDestPath))
+                                {
+                                    File.Delete(fileInfo.FinalDestPath);
+                                }
+                                File.Move(fileInfo.PartPath, fileInfo.FinalDestPath);
+
                                 // Restore exact timestamps
                                 try
                                 {
                                     if (fileInfo.Entry.ModifiedEpochNanos > 0)
                                     {
                                         var mtime = DateTimeOffset.FromUnixTimeMilliseconds(fileInfo.Entry.ModifiedEpochNanos / 1_000_000L).UtcDateTime;
-                                        File.SetLastWriteTimeUtc(fileInfo.DestPath, mtime);
+                                        File.SetLastWriteTimeUtc(fileInfo.FinalDestPath, mtime);
                                     }
                                     if (fileInfo.Entry.CreatedEpochNanos > 0)
                                     {
                                         var ctime = DateTimeOffset.FromUnixTimeMilliseconds(fileInfo.Entry.CreatedEpochNanos / 1_000_000L).UtcDateTime;
-                                        File.SetCreationTimeUtc(fileInfo.DestPath, ctime);
+                                        File.SetCreationTimeUtc(fileInfo.FinalDestPath, ctime);
                                     }
                                 }
                                 catch { }
 
-                                FileReceived?.Invoke(Path.GetFileName(fileInfo.DestPath), fileInfo.DestPath);
+                                FileReceived?.Invoke(Path.GetFileName(fileInfo.FinalDestPath), fileInfo.FinalDestPath);
                             }
                         }
                     }
@@ -181,7 +209,15 @@ public class TransferServer
                 // Clean up any remaining open streams
                 foreach (var kv in activeFiles)
                 {
-                    kv.Value.Stream.Dispose();
+                    try
+                    {
+                        kv.Value.Stream.Dispose();
+                        if (File.Exists(kv.Value.PartPath))
+                        {
+                            File.Delete(kv.Value.PartPath);
+                        }
+                    }
+                    catch { }
                 }
 
                 // 4. Send BatchComplete ACK

@@ -1,9 +1,12 @@
 package com.filesync.app.network
 
 import android.content.Context
+import android.content.Intent
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Environment
 import android.util.Log
+import com.filesync.app.util.PreferencesHelper
 import java.io.File
 import java.io.RandomAccessFile
 import java.net.ServerSocket
@@ -93,10 +96,7 @@ class TransferReceiverServer(private val context: Context) {
             val input = s.getInputStream()
             val output = s.getOutputStream()
 
-            val baseDir = File(
-                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-                "FileSync"
-            ).apply { mkdirs() }
+            val baseDir = File(PreferencesHelper.getOutputDirectory(context)).apply { mkdirs() }
 
             try {
                 // 1. Read BatchManifest
@@ -111,21 +111,25 @@ class TransferReceiverServer(private val context: Context) {
                 val ack = Frame(MessageType.ManifestAck, byteArrayOf(1))
                 ack.writeToStream(output)
 
-                // Pre-allocate files
-                val activeFiles = mutableMapOf<Int, Pair<RandomAccessFile, File>>()
+                // Pre-allocate files: activeFiles[entry.fileIndex] = Triple(raf, partFile, finalFile)
+                val activeFiles = mutableMapOf<Int, Triple<RandomAccessFile, File, File>>()
                 for (entry in manifest.entries) {
                     val sanitized = entry.relativePath
                         .replace('\\', '/')
                         .trimStart('/')
 
                     val destFile = File(baseDir, sanitized)
+                    if (!destFile.canonicalPath.startsWith(baseDir.canonicalPath)) {
+                        throw SecurityException("Invalid path traversal attempt: ${entry.relativePath}")
+                    }
                     destFile.parentFile?.mkdirs()
 
-                    val raf = RandomAccessFile(destFile, "rw")
+                    val partFile = File(destFile.parentFile, "${destFile.name}.part")
+                    val raf = RandomAccessFile(partFile, "rw")
                     if (entry.size > 0) {
                         raf.setLength(entry.size) // Pre-allocate contiguous disk space
                     }
-                    activeFiles[entry.fileIndex] = Pair(raf, destFile)
+                    activeFiles[entry.fileIndex] = Triple(raf, partFile, destFile)
                 }
 
                 var totalBytesTransferred = 0L
@@ -168,26 +172,34 @@ class TransferReceiverServer(private val context: Context) {
                         if (frame.payload.size >= 4) {
                             val buf = ByteBuffer.wrap(frame.payload).order(ByteOrder.LITTLE_ENDIAN)
                             val fileIdx = buf.getInt()
-                            activeFiles[fileIdx]?.let { (raf, file) ->
+                            activeFiles[fileIdx]?.let { (raf, partFile, finalFile) ->
                                 raf.close()
+
+                                if (finalFile.exists()) {
+                                    finalFile.delete()
+                                }
+                                partFile.renameTo(finalFile)
 
                                 // Restore exact timestamps
                                 val entry = manifest.entries.find { it.fileIndex == fileIdx }
                                 if (entry != null && entry.modifiedEpochNanos > 0) {
                                     val mtimeMillis = entry.modifiedEpochNanos / 1_000_000L
-                                    file.setLastModified(mtimeMillis)
+                                    finalFile.setLastModified(mtimeMillis)
                                 }
 
                                 // Scan into MediaStore so Gallery & File Manager immediately see it
                                 MediaScannerConnection.scanFile(
                                     context,
-                                    arrayOf(file.absolutePath),
+                                    arrayOf(finalFile.absolutePath),
                                     null,
                                     null
                                 )
+                                try {
+                                    context.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(finalFile)))
+                                } catch (_: Exception) {}
 
-                                onFileReceived?.invoke(file.name, file)
-                                Log.i(TAG, "File received & verified: ${file.name} (${file.length()} bytes)")
+                                onFileReceived?.invoke(finalFile.name, finalFile)
+                                Log.i(TAG, "File received & verified: ${finalFile.name} (${finalFile.length()} bytes)")
                             }
                         }
                     } else if (frame.type == MessageType.BatchComplete) {
@@ -196,9 +208,12 @@ class TransferReceiverServer(private val context: Context) {
                 }
 
                 // Close any remaining handles
-                for ((_, pair) in activeFiles) {
+                for ((_, triple) in activeFiles) {
                     try {
-                        pair.first.close()
+                        triple.first.close()
+                        if (triple.second.exists()) {
+                            triple.second.delete()
+                        }
                     } catch (_: Exception) {}
                 }
 

@@ -186,7 +186,11 @@ public class TransferClient
             item.Progress = 100.0;
         }
 
-        // 6. Wait for BatchComplete
+        // 6. Send BatchComplete
+        var batchFrame = new Frame(MessageType.BatchComplete, new byte[] { 1 });
+        await batchFrame.WriteToStreamAsync(stream, ct);
+
+        // 7. Wait for BatchComplete ACK
         var batchAck = await Frame.ReadFromStreamAsync(stream, ct);
         if (batchAck != null && batchAck.Type == MessageType.BatchComplete)
         {

@@ -65,30 +65,54 @@
             </Grid>
         </Border>
 
-        <!-- Main Body: Drop Zone & Transfer Queue -->
-        <Grid Grid.Row="1" Margin="20,5,20,10">
+        <!-- Main Body: Destination Bar, Drop Zone & Transfer Queue -->
+        <Grid Grid.Row="1" Margin="20,0,20,10">
             <Grid.RowDefinitions>
-                <RowDefinition Height="130" />
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="110" />
                 <RowDefinition Height="*" />
             </Grid.RowDefinitions>
 
+            <!-- Destination Folder Configuration Bar -->
+            <Border Grid.Row="0" Background="#1E1E1E" CornerRadius="8" Margin="0,0,0,8" Padding="12,6">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="📂" FontSize="15" VerticalAlignment="Center" Margin="0,0,8,0" />
+                    <TextBlock Grid.Column="1" Text="Save Received Files To:" FontWeight="SemiBold" FontSize="12" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#CCCCCC" />
+                    <TextBox Grid.Column="2" Text="{Binding OutputDirectory, Mode=OneWay}" IsReadOnly="True" 
+                             Background="#141414" Foreground="#4CC2FF" BorderBrush="#33FFFFFF" Padding="8,4" 
+                             VerticalAlignment="Center" ToolTip="{Binding OutputDirectory}" />
+                    <ui:Button Grid.Column="3" Content="Change Folder..." Command="{Binding ChangeOutputFolderCommand}" 
+                               Margin="8,0,6,0" Appearance="Secondary" />
+                    <ui:Button Grid.Column="4" Content="Open Folder" Command="{Binding OpenReceivedFolderCommand}" 
+                               Click="OpenReceivedFolder_Click" Appearance="Secondary" />
+                </Grid>
+            </Border>
+
             <!-- Interactive Drag and Drop Zone -->
-            <Border Grid.Row="0" Margin="0,0,0,10" CornerRadius="8"
+            <Border Grid.Row="1" Margin="0,0,0,10" CornerRadius="8"
                     BorderThickness="2" BorderBrush="#40FFFFFF" Background="#1E1E1E"
                     AllowDrop="True" Drop="DropZone_Drop" DragOver="DropZone_DragOver" DragLeave="DropZone_DragLeave">
                 <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
                     <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <TextBlock Text="⬆" FontSize="36" FontWeight="Bold" Foreground="#4CC2FF" HorizontalAlignment="Center" Margin="0,0,0,8" />
+                        <TextBlock Text="⬆" FontSize="30" FontWeight="Bold" Foreground="#4CC2FF" HorizontalAlignment="Center" Margin="0,0,0,4" />
                         <TextBlock Text="Drag and drop files or entire folders here" 
-                                   FontWeight="SemiBold" FontSize="15" Foreground="#F3F3F3" HorizontalAlignment="Center" />
+                                   FontWeight="SemiBold" FontSize="14" Foreground="#F3F3F3" HorizontalAlignment="Center" />
                         <TextBlock Text="Preserves nanosecond timestamps, folder trees, and original bit-for-bit size" 
-                                   Opacity="0.6" FontSize="12" Foreground="#AAAAAA" HorizontalAlignment="Center" Margin="0,4,0,0" />
+                                   Opacity="0.6" FontSize="11" Foreground="#AAAAAA" HorizontalAlignment="Center" Margin="0,2,0,0" />
                     </StackPanel>
                 </Grid>
             </Border>
 
             <!-- File Queue ListView -->
-            <ui:DataGrid Grid.Row="1" ItemsSource="{Binding Queue}" AutoGenerateColumns="False" 
+            <ui:DataGrid Grid.Row="2" ItemsSource="{Binding Queue}" AutoGenerateColumns="False" 
                          CanUserAddRows="False" CanUserDeleteRows="False" SelectionMode="Single"
                          HeadersVisibility="Column" HorizontalScrollBarVisibility="Auto">
                 <ui:DataGrid.Columns>
@@ -159,6 +183,8 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <!-- Rust Core Version Badge -->
@@ -177,13 +203,19 @@
                 </StackPanel>
 
                 <!-- Buttons -->
-                <ui:Button Grid.Column="3" Content="➕ Add Files" 
+                <ui:Button Grid.Column="3" Content="📁 Received Files" 
+                           Command="{Binding OpenReceivedFolderCommand}" Click="OpenReceivedFolder_Click" Appearance="Secondary" Margin="0,0,10,0" />
+
+                <ui:Button Grid.Column="4" Content="➕ Add Files" 
                            Command="{Binding AddFilesCommand}" Margin="0,0,10,0" />
 
-                <ui:Button Grid.Column="4" Content="🗑️ Clear Queue" 
+                <ui:Button Grid.Column="5" Content="🧹 Clear Sent" 
+                           Command="{Binding ClearCompletedCommand}" Appearance="Secondary" Margin="0,0,10,0" />
+
+                <ui:Button Grid.Column="6" Content="🗑️ Clear All" 
                            Command="{Binding ClearQueueCommand}" Appearance="Secondary" Margin="0,0,10,0" />
 
-                <ui:Button Grid.Column="5" Content="🚀 Send to Android" 
+                <ui:Button Grid.Column="7" Content="🚀 Send to Android" 
                            Command="{Binding StartTransferCommand}" Appearance="Primary" FontWeight="Bold" Padding="20,6" />
             </Grid>
         </Border>

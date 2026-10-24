@@ -39,6 +39,13 @@ public partial class MainViewModel : ObservableObject
     private string _statusMessage = "Ready for high-speed file sharing.";
 
     [ObservableProperty]
+    private string _outputDirectory = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        "Downloads",
+        "FileSync"
+    );
+
+    [ObservableProperty]
     private bool _isContextMenuEnabled;
 
     [ObservableProperty]
@@ -47,13 +54,21 @@ public partial class MainViewModel : ObservableObject
     public ObservableCollection<PeerDevice> AvailableDevices { get; } = new();
     public ObservableCollection<TransferItem> Queue { get; } = new();
 
+    private static readonly string SettingsFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "FileSync",
+        "settings.json"
+    );
+
     public MainViewModel()
     {
         App.Trace("MainViewModel..ctor started");
+        LoadSettings();
+
         _adbService = new AdbService();
         _explorerMenuService = new ExplorerMenuService();
         _transferClient = new TransferClient();
-        _transferServer = new TransferServer();
+        _transferServer = new TransferServer(OutputDirectory);
 
         _transferServer.StatusChanged += msg =>
         {
@@ -61,7 +76,10 @@ public partial class MainViewModel : ObservableObject
         };
         _transferServer.FileReceived += (name, path) =>
         {
-            App.Current?.Dispatcher.Invoke(() => StatusMessage = $"Received: {name}");
+            App.Current?.Dispatcher.Invoke(() =>
+            {
+                StatusMessage = $"🎉 Received: {name} (Saved to Downloads\\FileSync)";
+            });
         };
         _transferServer.Start(45781);
 
@@ -74,6 +92,21 @@ public partial class MainViewModel : ObservableObject
 
         // Seed with local discovery placeholder / USB status
         ScanDevices();
+
+        // Background auto-detection timer for USB ADB devices
+        var usbTimer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromSeconds(2)
+        };
+        usbTimer.Tick += async (s, e) =>
+        {
+            if (!IsTransferring)
+            {
+                await CheckUsbDevicesAsync();
+            }
+        };
+        usbTimer.Start();
+
         App.Trace("MainViewModel..ctor completed");
     }
 
@@ -107,24 +140,29 @@ public partial class MainViewModel : ObservableObject
             var devices = await _adbService.GetConnectedDevicesAsync();
             if (devices.Count == 0) return;
 
+            bool isNew = !AvailableDevices.Any(d => d.EndPoint == "127.0.0.1:45782");
+            if (isNew)
+            {
+                await _adbService.SetupAdbForwardAsync(45782, 45780);
+                await _adbService.SetupAdbReverseAsync(45783, 45781);
+            }
+
             void UpdateList()
             {
                 foreach (var dev in devices)
                 {
                     if (!AvailableDevices.Any(d => d.EndPoint == "127.0.0.1:45782"))
                     {
-                        AvailableDevices.Insert(0, new PeerDevice
+                        var usbDevice = new PeerDevice
                         {
                             Name = $"Samsung Device ({dev})",
                             OsName = "Android",
                             EndPoint = "127.0.0.1:45782",
                             ConnectionType = "USB ADB Tunnel"
-                        });
+                        };
+                        AvailableDevices.Insert(0, usbDevice);
+                        SelectedDevice = usbDevice;
                     }
-                }
-                if (AvailableDevices.Count > 0)
-                {
-                    SelectedDevice = AvailableDevices[0];
                 }
             }
 
@@ -234,19 +272,36 @@ public partial class MainViewModel : ObservableObject
         UpdateQueueTotals();
     }
 
+    [RelayCommand]
+    public void ClearCompleted()
+    {
+        var completed = Queue.Where(i => i.Status == "Completed").ToList();
+        foreach (var item in completed)
+        {
+            Queue.Remove(item);
+        }
+        UpdateQueueTotals();
+    }
+
     private void UpdateQueueTotals()
     {
-        long totalBytes = Queue.Where(i => !i.IsDirectory).Sum(i => i.Size);
+        var pending = Queue.Where(i => !i.IsDirectory && i.Status != "Completed").ToList();
+        long totalBytes = pending.Sum(i => i.Size);
         TransferredBytesText = $"0 MB / {FormatBytes(totalBytes)}";
-        StatusMessage = $"{Queue.Count} item(s) queued ({FormatBytes(totalBytes)} total).";
+        StatusMessage = pending.Count > 0 
+            ? $"{pending.Count} pending file(s) ({FormatBytes(totalBytes)} total)."
+            : (Queue.Count > 0 ? "All items in queue transferred." : "Transfer queue is empty. Drag and drop files to send.");
     }
 
     [RelayCommand]
     public async Task StartTransferAsync()
     {
-        if (Queue.Count == 0)
+        var pendingItems = Queue.Where(i => !i.IsDirectory && i.Status != "Completed").ToList();
+        if (pendingItems.Count == 0)
         {
-            StatusMessage = "Transfer queue is empty. Drag and drop files to send.";
+            StatusMessage = Queue.Count > 0 
+                ? "All files in queue have already been transferred. Add new files to send." 
+                : "Transfer queue is empty. Drag and drop files to send.";
             return;
         }
 
@@ -280,20 +335,19 @@ public partial class MainViewModel : ObservableObject
 
         try
         {
-            var itemsToSend = Queue.ToList();
             bool success = await _transferClient.SendFilesAsync(
                 host,
                 port,
-                itemsToSend,
+                pendingItems,
                 report =>
                 {
                     App.Current?.Dispatcher.Invoke(() =>
                     {
-                        if (report.CurrentFileIndex >= 0 && report.CurrentFileIndex < Queue.Count)
+                        if (report.CurrentFileIndex >= 0 && report.CurrentFileIndex < pendingItems.Count)
                         {
-                            var qItem = Queue[report.CurrentFileIndex];
-                            qItem.Progress = report.CurrentFileProgress;
-                            qItem.Status = report.CurrentFileProgress >= 100.0 ? "Completed" : "InProgress";
+                            var targetItem = pendingItems[report.CurrentFileIndex];
+                            targetItem.Progress = report.CurrentFileProgress;
+                            targetItem.Status = report.CurrentFileProgress >= 100.0 ? "Completed" : "InProgress";
                         }
                         TotalProgress = report.TotalProgress;
                         CurrentSpeedText = report.FormattedSpeed;
@@ -311,20 +365,15 @@ public partial class MainViewModel : ObservableObject
             {
                 App.Current?.Dispatcher.Invoke(() =>
                 {
-                    foreach (var item in Queue)
+                    foreach (var item in pendingItems)
                     {
                         item.Progress = 100.0;
                         item.Status = "Completed";
                     }
                     TotalProgress = 100.0;
-                    StatusMessage = $"✅ Successfully transferred {Queue.Count} file(s) to Android!";
+                    StatusMessage = $"✅ Successfully transferred {pendingItems.Count} file(s) to Android!";
+                    UpdateQueueTotals();
                 });
-
-                System.Windows.MessageBox.Show(
-                    $"Successfully transferred {Queue.Count} file(s) to your Android device!\n\nSaved to: Internal Storage > Download > FileSync",
-                    "FileSync Transfer Complete",
-                    System.Windows.MessageBoxButton.OK,
-                    System.Windows.MessageBoxImage.Information);
             }
         }
         catch (OperationCanceledException)
@@ -340,6 +389,109 @@ public partial class MainViewModel : ObservableObject
             IsTransferring = false;
             CurrentSpeedText = "0 MB/s";
             _transferCts = null;
+        }
+    }
+
+    private void LoadSettings()
+    {
+        try
+        {
+            if (File.Exists(SettingsFilePath))
+            {
+                var json = File.ReadAllText(SettingsFilePath);
+                var doc = System.Text.Json.JsonDocument.Parse(json);
+                if (doc.RootElement.TryGetProperty("OutputDirectory", out var prop))
+                {
+                    var path = prop.GetString();
+                    if (!string.IsNullOrWhiteSpace(path))
+                    {
+                        Directory.CreateDirectory(path);
+                        OutputDirectory = path;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Trace($"Error loading settings: {ex}");
+        }
+    }
+
+    private void SaveSettings()
+    {
+        try
+        {
+            var dir = Path.GetDirectoryName(SettingsFilePath);
+            if (!string.IsNullOrEmpty(dir))
+            {
+                Directory.CreateDirectory(dir);
+            }
+            var json = System.Text.Json.JsonSerializer.Serialize(new { OutputDirectory });
+            File.WriteAllText(SettingsFilePath, json);
+        }
+        catch (Exception ex)
+        {
+            App.Trace($"Error saving settings: {ex}");
+        }
+    }
+
+    [RelayCommand]
+    public void ChangeOutputFolder()
+    {
+        try
+        {
+            var dialog = new Microsoft.Win32.OpenFolderDialog
+            {
+                Title = "Select Destination Folder for Received Files",
+                InitialDirectory = Directory.Exists(OutputDirectory) ? OutputDirectory : Environment.GetFolderPath(Environment.SpecialFolder.UserProfile)
+            };
+
+            if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.FolderName))
+            {
+                OutputDirectory = dialog.FolderName;
+                _transferServer.SaveDirectory = OutputDirectory;
+                SaveSettings();
+                StatusMessage = $"Destination folder updated to: {OutputDirectory}";
+            }
+        }
+        catch (Exception ex)
+        {
+            App.Trace($"ChangeOutputFolder error: {ex}");
+            StatusMessage = $"Error selecting folder: {ex.Message}";
+        }
+    }
+
+    [RelayCommand]
+    public void OpenReceivedFolder()
+    {
+        try
+        {
+            Directory.CreateDirectory(OutputDirectory);
+            App.Trace($"Opening explorer.exe for folder: {OutputDirectory}");
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{OutputDirectory}\"",
+                UseShellExecute = false
+            });
+            StatusMessage = $"Opened folder: {OutputDirectory}";
+        }
+        catch (Exception ex)
+        {
+            App.Trace($"OpenReceivedFolder exception: {ex}");
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = OutputDirectory,
+                    UseShellExecute = true
+                });
+            }
+            catch (Exception ex2)
+            {
+                App.Trace($"OpenReceivedFolder fallback exception: {ex2}");
+                StatusMessage = $"Could not open folder: {ex.Message}";
+            }
         }
     }
 

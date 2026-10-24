@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -21,6 +22,7 @@ import com.filesync.app.network.TransferSenderClient
 import com.filesync.app.service.TransferForegroundService
 import com.filesync.app.ui.screens.HomeScreen
 import com.filesync.app.ui.theme.FileSyncTheme
+import com.filesync.app.util.PreferencesHelper
 import com.filesync.app.util.StorageHelper
 import kotlinx.coroutines.launch
 import java.io.File
@@ -34,12 +36,14 @@ class MainActivity : ComponentActivity() {
     private var totalProgress by mutableStateOf(0f)
     private var transferredText by mutableStateOf("0 MB / 0 MB")
     private var etaText by mutableStateOf("--")
+    private var outputDirectory by mutableStateOf("")
 
     private val fileReceivedReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             val fileName = intent?.getStringExtra("FILE_NAME") ?: "New file"
             refreshReceivedFiles()
-            Toast.makeText(this@MainActivity, "🎉 Received: $fileName in Downloads/FileSync", Toast.LENGTH_LONG).show()
+            val folderName = File(outputDirectory).name
+            Toast.makeText(this@MainActivity, "🎉 Received: $fileName in $folderName", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -49,8 +53,29 @@ class MainActivity : ComponentActivity() {
         uris?.let { handleUris(it) }
     }
 
+    private val folderPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        uri?.let {
+            try {
+                contentResolver.takePersistableUriPermission(
+                    it,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (_: Exception) {}
+
+            val resolvedPath = StorageHelper.getPathFromTreeUri(this, it)
+            if (resolvedPath != null) {
+                setOutputFolder(resolvedPath)
+            } else {
+                Toast.makeText(this, "Could not resolve folder path. Please select internal storage folder.", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        outputDirectory = PreferencesHelper.getOutputDirectory(this)
 
         // Ensure receiver service is active in background
         val serviceIntent = Intent(this, TransferForegroundService::class.java).apply {
@@ -79,6 +104,7 @@ class MainActivity : ComponentActivity() {
                 HomeScreen(
                     queue = queue,
                     receivedFiles = receivedFiles,
+                    outputDirectory = outputDirectory,
                     isTransferring = isTransferring,
                     currentSpeed = currentSpeed,
                     totalProgress = totalProgress,
@@ -87,9 +113,15 @@ class MainActivity : ComponentActivity() {
                     onAddFilesClick = {
                         filePickerLauncher.launch("*/*")
                     },
+                    onChangeOutputDirectoryClick = {
+                        showFolderSelectionDialog()
+                    },
                     onClearQueueClick = {
                         queue.clear()
                         updateTotals()
+                    },
+                    onClearCompletedClick = {
+                        clearCompleted()
                     },
                     onStartTransferClick = {
                         startTransfer()
@@ -102,6 +134,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        outputDirectory = PreferencesHelper.getOutputDirectory(this)
+        refreshReceivedFiles()
+    }
+
     override fun onDestroy() {
         try {
             unregisterReceiver(fileReceivedReceiver)
@@ -111,22 +149,59 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshReceivedFiles() {
         receivedFiles.clear()
-        val baseDir = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "FileSync"
-        )
+        val currentDir = PreferencesHelper.getOutputDirectory(this)
+        outputDirectory = currentDir
+        val baseDir = File(currentDir)
         if (baseDir.exists() && baseDir.isDirectory) {
-            baseDir.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }?.forEach { f ->
-                receivedFiles.add(
-                    ReceivedItem(
-                        name = f.name,
-                        path = f.absolutePath,
-                        size = f.length(),
-                        modifiedTime = f.lastModified()
+            val files = baseDir.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }
+            if (files != null) {
+                val pathsToScan = mutableListOf<String>()
+                files.forEach { f ->
+                    receivedFiles.add(
+                        ReceivedItem(
+                            name = f.name,
+                            path = f.absolutePath,
+                            size = f.length(),
+                            modifiedTime = f.lastModified()
+                        )
                     )
-                )
+                    pathsToScan.add(f.absolutePath)
+                }
+                if (pathsToScan.isNotEmpty()) {
+                    MediaScannerConnection.scanFile(this, pathsToScan.toTypedArray(), null, null)
+                }
             }
         }
+    }
+
+    private fun setOutputFolder(path: String) {
+        PreferencesHelper.setOutputDirectory(this, path)
+        outputDirectory = PreferencesHelper.getOutputDirectory(this)
+        refreshReceivedFiles()
+        Toast.makeText(this, "Destination folder set to:\n$path", Toast.LENGTH_LONG).show()
+    }
+
+    private fun showFolderSelectionDialog() {
+        val presets = arrayOf(
+            "Downloads / FileSync (Default)",
+            "Downloads (Root)",
+            "DCIM (Photos & Camera)",
+            "Documents",
+            "Browse Custom Folder..."
+        )
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Select Destination Folder")
+            .setItems(presets) { _, which ->
+                when (which) {
+                    0 -> setOutputFolder(PreferencesHelper.getDefaultOutputDirectory())
+                    1 -> setOutputFolder(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).absolutePath)
+                    2 -> setOutputFolder(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM).absolutePath)
+                    3 -> setOutputFolder(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).absolutePath)
+                    4 -> folderPickerLauncher.launch(null)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -188,20 +263,61 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun updateTotals() {
-        val totalBytes = queue.filter { !it.isDirectory }.sumOf { it.size }
+        val pendingItems = queue.filter { !it.isDirectory && it.status != "Completed" }
+        val totalBytes = pendingItems.sumOf { it.size }
         transferredText = "0 MB / ${formatBytes(totalBytes)}"
     }
 
+    private fun clearCompleted() {
+        queue.removeAll { it.status == "Completed" }
+        updateTotals()
+    }
+
     private fun startTransfer() {
-        if (queue.isEmpty()) return
+        val pendingItems = queue.filter { !it.isDirectory && it.status != "Completed" }
+        if (pendingItems.isEmpty()) {
+            if (queue.isNotEmpty()) {
+                Toast.makeText(this, "All queued files have already been sent to PC.", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
 
         isTransferring = true
-        val totalBytes = queue.filter { !it.isDirectory }.sumOf { it.size }
+        val totalBytes = pendingItems.sumOf { it.size }
         transferredText = "0 MB / ${formatBytes(totalBytes)}"
         currentSpeed = "Connecting..."
         etaText = "--"
 
-        val client = TransferSenderClient(this)
+        val client = TransferSenderClient(this).apply {
+            onFileStarted = { index, _ ->
+                val item = pendingItems.getOrNull(index)
+                if (item != null) {
+                    val qIdx = queue.indexOfFirst { it.fullPath == item.fullPath }
+                    if (qIdx != -1) {
+                        queue[qIdx] = queue[qIdx].copy(status = "InProgress", progress = 0f)
+                    }
+                }
+            }
+            onFileProgress = { index, bytesSent, totalFileSize ->
+                val item = pendingItems.getOrNull(index)
+                if (item != null && totalFileSize > 0) {
+                    val qIdx = queue.indexOfFirst { it.fullPath == item.fullPath }
+                    if (qIdx != -1) {
+                        val frac = (bytesSent.toFloat() / totalFileSize).coerceIn(0f, 1f)
+                        queue[qIdx] = queue[qIdx].copy(progress = frac)
+                    }
+                }
+            }
+            onFileCompleted = { index, _ ->
+                val item = pendingItems.getOrNull(index)
+                if (item != null) {
+                    val qIdx = queue.indexOfFirst { it.fullPath == item.fullPath }
+                    if (qIdx != -1) {
+                        queue[qIdx] = queue[qIdx].copy(status = "Completed", progress = 1f)
+                    }
+                }
+            }
+        }
 
         lifecycleScope.launch {
             try {
@@ -209,13 +325,10 @@ class MainActivity : ComponentActivity() {
                 val host = "127.0.0.1"
                 val port = 45783
 
-                val success = client.sendFiles(host, port, queue.toList()) { percent, speed, fileName, transferred, total ->
+                val success = client.sendFiles(host, port, pendingItems) { percent, speed, fileName, transferred, total ->
                     totalProgress = percent / 100f
                     currentSpeed = speed
                     transferredText = "${formatBytes(transferred)} / ${formatBytes(total)}"
-
-                    val remainingBytes = (total - transferred).coerceAtLeast(0)
-                    etaText = if (speed.contains("MB/s") || speed.contains("GB/s")) "< 5s" else "--"
 
                     val updateIntent = Intent(this@MainActivity, TransferForegroundService::class.java).apply {
                         action = TransferForegroundService.ACTION_UPDATE
@@ -228,13 +341,15 @@ class MainActivity : ComponentActivity() {
 
                 if (success) {
                     currentSpeed = "0 MB/s"
-                    etaText = "Complete"
+                    etaText = "Done"
                     totalProgress = 1f
-                    for (item in queue) {
-                        item.status = "Completed"
-                        item.progress = 1f
+                    for (item in pendingItems) {
+                        val qIdx = queue.indexOfFirst { it.fullPath == item.fullPath }
+                        if (qIdx != -1) {
+                            queue[qIdx] = queue[qIdx].copy(status = "Completed", progress = 1f)
+                        }
                     }
-                    Toast.makeText(this@MainActivity, "Files sent to Windows successfully!", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "✅ Successfully sent ${pendingItems.size} file(s) to Windows!", Toast.LENGTH_LONG).show()
                 } else {
                     currentSpeed = "0 MB/s"
                     etaText = "Failed"
@@ -246,6 +361,7 @@ class MainActivity : ComponentActivity() {
                 Toast.makeText(this@MainActivity, "Error: ${e.message}", Toast.LENGTH_LONG).show()
             } finally {
                 isTransferring = false
+                updateTotals()
             }
         }
     }

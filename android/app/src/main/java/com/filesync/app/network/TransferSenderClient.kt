@@ -18,6 +18,10 @@ class TransferSenderClient(private val context: Context) {
         const val DEFAULT_CHUNK_SIZE = 1024 * 1024 // 1 MB high-speed streaming chunks
     }
 
+    var onFileStarted: ((index: Int, name: String) -> Unit)? = null
+    var onFileProgress: ((index: Int, bytesSent: Long, totalFileSize: Long) -> Unit)? = null
+    var onFileCompleted: ((index: Int, name: String) -> Unit)? = null
+
     suspend fun sendFiles(
         host: String,
         port: Int,
@@ -29,6 +33,7 @@ class TransferSenderClient(private val context: Context) {
 
         val socket = Socket(host, port).apply {
             tcpNoDelay = true
+            soTimeout = 15000
             sendBufferSize = 4 * 1024 * 1024
             receiveBufferSize = 4 * 1024 * 1024
         }
@@ -82,6 +87,8 @@ class TransferSenderClient(private val context: Context) {
             var lastBytes = 0L
 
             for ((idx, item) in validItems.withIndex()) {
+                onFileStarted?.invoke(idx, item.name)
+
                 val inputStream: InputStream = if (item.fullPath.startsWith("content://")) {
                     context.contentResolver.openInputStream(Uri.parse(item.fullPath))
                         ?: throw IllegalStateException("Cannot open content URI: ${item.fullPath}")
@@ -115,6 +122,8 @@ class TransferSenderClient(private val context: Context) {
                         fileOffset += bytesRead
                         totalTransferred += bytesRead
 
+                        onFileProgress?.invoke(idx, fileOffset, fileSize)
+
                         val now = System.currentTimeMillis()
                         if (now - lastTime >= 100 || totalTransferred == totalBytes) {
                             val elapsedSec = maxOf(0.001, (now - lastTime) / 1000.0)
@@ -134,9 +143,15 @@ class TransferSenderClient(private val context: Context) {
                 val completeBuf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(idx).array()
                 val completeFrame = Frame(MessageType.FileComplete, completeBuf)
                 completeFrame.writeToStream(output)
+
+                onFileCompleted?.invoke(idx, item.name)
             }
 
-            // 6. Wait for BatchComplete
+            // 6. Send BatchComplete
+            val batchCompleteFrame = Frame(MessageType.BatchComplete, byteArrayOf(1))
+            batchCompleteFrame.writeToStream(output)
+
+            // 7. Wait for BatchComplete ACK
             val batchAck = Frame.readFromStream(input)
             return@withContext batchAck?.type == MessageType.BatchComplete
         }

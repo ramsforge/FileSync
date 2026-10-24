@@ -39,6 +39,12 @@ public partial class MainWindow : Window
         App.Trace("MainWindow..ctor completed");
     }
 
+    private void OpenReceivedFolder_Click(object sender, RoutedEventArgs e)
+    {
+        App.Trace("OpenReceivedFolder_Click fired");
+        ViewModel.OpenReceivedFolder();
+    }
+
     private void DropZone_DragOver(object sender, DragEventArgs e)
     {
         if (e.Data.GetDataPresent(DataFormats.FileDrop))

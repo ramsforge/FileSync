@@ -31,3 +31,5 @@ windows/FileSync.App/Native/libs/
 *.tmp
 .DS_Store
 Thumbs.db
+publish_win/
+*.png
