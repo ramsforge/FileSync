@@ -68,6 +68,15 @@ class TransferForegroundService : Service() {
             onStatusChanged = { status ->
                 Log.i("TransferService", status)
             }
+            onFileReceived = { name, file ->
+                val intent = Intent("com.filesync.ACTION_FILE_RECEIVED").apply {
+                    putExtra("FILE_NAME", name)
+                    putExtra("FILE_PATH", file.absolutePath)
+                    putExtra("FILE_SIZE", file.length())
+                    setPackage(packageName)
+                }
+                sendBroadcast(intent)
+            }
             start(TransferReceiverServer.DEFAULT_PORT)
         }
     }

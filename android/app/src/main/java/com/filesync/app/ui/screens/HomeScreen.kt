@@ -21,14 +21,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.filesync.app.core.CoreBridge
 import com.filesync.app.core.PeerDevice
+import com.filesync.app.core.ReceivedItem
 import com.filesync.app.core.TransferItem
 import com.filesync.app.ui.theme.*
 import com.filesync.app.util.StorageHelper
+import android.content.Intent
+import androidx.core.content.FileProvider
+import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     queue: List<TransferItem>,
+    receivedFiles: List<ReceivedItem>,
     isTransferring: Boolean,
     currentSpeed: String,
     totalProgress: Float,
@@ -41,6 +46,7 @@ fun HomeScreen(
 ) {
     val context = LocalContext.current
     var hasPermission by remember { mutableStateOf(StorageHelper.hasAllFilesAccess(context)) }
+    var currentTab by remember { mutableStateOf(if (queue.isEmpty() && receivedFiles.isNotEmpty()) 1 else 0) }
 
     Scaffold(
         topBar = {
@@ -240,71 +246,194 @@ fun HomeScreen(
                 }
             }
 
-            // 4. File Queue List
-            Row(
+            // 4. Tabs: Outgoing Queue vs Received Files
+            TabRow(
+                selectedTabIndex = currentTab,
+                containerColor = CardDark,
+                contentColor = TextPrimary,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 12.dp, bottom = 6.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+                    .padding(vertical = 8.dp)
+                    .clip(RoundedCornerShape(8.dp))
             ) {
-                Text(
-                    text = "Transfer Queue (${queue.size})",
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 15.sp,
-                    color = TextPrimary
+                Tab(
+                    selected = currentTab == 0,
+                    onClick = { currentTab = 0 },
+                    text = { Text("Send Queue (${queue.size})", fontWeight = FontWeight.SemiBold) }
                 )
-                if (queue.isNotEmpty() && !isTransferring) {
-                    TextButton(onClick = onClearQueueClick) {
-                        Text("Clear All", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
-                    }
-                }
+                Tab(
+                    selected = currentTab == 1,
+                    onClick = { currentTab = 1 },
+                    text = { Text("Received Files (${receivedFiles.size})", fontWeight = FontWeight.SemiBold) }
+                )
             }
 
-            if (queue.isEmpty()) {
-                Box(
+            if (currentTab == 0) {
+                // Outgoing Queue
+                Row(
                     modifier = Modifier
-                        .weight(1f)
                         .fillMaxWidth()
-                        .padding(vertical = 16.dp)
-                        .border(1.dp, BorderColor, RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center
+                        .padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(
-                            imageVector = Icons.Default.FolderOpen,
-                            contentDescription = null,
-                            tint = TextSecondary,
-                            modifier = Modifier.size(48.dp)
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "No files selected",
-                            color = TextPrimary,
-                            fontWeight = FontWeight.Medium
-                        )
-                        Text(
-                            text = "Share files from any app or tap 'Add Files'",
-                            color = TextSecondary,
-                            fontSize = 12.sp
-                        )
+                    Text(
+                        text = "Files to send to PC (${queue.size})",
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 13.sp,
+                        color = TextSecondary
+                    )
+                    if (queue.isNotEmpty() && !isTransferring) {
+                        TextButton(onClick = onClearQueueClick) {
+                            Text("Clear All", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                        }
+                    }
+                }
+
+                if (queue.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .border(1.dp, BorderColor, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.FolderOpen,
+                                contentDescription = null,
+                                tint = TextSecondary,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Send queue is empty",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "Tap 'Add Files' below or Share from Gallery to send to PC",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(queue) { item ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = CardDark),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            Icon(
+                                                imageVector = if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                                                contentDescription = null,
+                                                tint = if (item.isDirectory) SecondaryBlue else TextSecondary,
+                                                modifier = Modifier.size(24.dp)
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Column {
+                                                Text(
+                                                    text = item.name,
+                                                    fontWeight = FontWeight.Medium,
+                                                    fontSize = 14.sp,
+                                                    color = TextPrimary
+                                                )
+                                                Text(
+                                                    text = item.formattedSize,
+                                                    fontSize = 11.sp,
+                                                    color = TextSecondary
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = item.status,
+                                            fontSize = 12.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = if (item.status == "Completed") AccentGreen else SecondaryBlue
+                                        )
+                                    }
+
+                                    if (item.status == "InProgress") {
+                                        Spacer(modifier = Modifier.height(8.dp))
+                                        LinearProgressIndicator(
+                                            progress = { item.progress },
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(4.dp)
+                                                .clip(RoundedCornerShape(2.dp)),
+                                            color = SecondaryBlue,
+                                            trackColor = SurfaceDark
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .weight(1f)
-                        .fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    items(queue) { item ->
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = CardDark),
-                            shape = RoundedCornerShape(8.dp)
-                        ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
+                // Received Files Tab
+                if (receivedFiles.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp)
+                            .border(1.dp, BorderColor, RoundedCornerShape(12.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = AccentGreen,
+                                modifier = Modifier.size(48.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = "Receiver Ready (Port 45780)",
+                                color = TextPrimary,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "Send files from Windows and they will appear here",
+                                color = TextSecondary,
+                                fontSize = 12.sp
+                            )
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(receivedFiles) { item ->
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = CardDark),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
                                 Row(
-                                    modifier = Modifier.fillMaxWidth(),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(12.dp),
                                     horizontalArrangement = Arrangement.SpaceBetween,
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
@@ -313,45 +442,26 @@ fun HomeScreen(
                                         modifier = Modifier.weight(1f)
                                     ) {
                                         Icon(
-                                            imageVector = if (item.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
+                                            imageVector = Icons.Default.CheckCircle,
                                             contentDescription = null,
-                                            tint = if (item.isDirectory) SecondaryBlue else TextSecondary,
+                                            tint = AccentGreen,
                                             modifier = Modifier.size(24.dp)
                                         )
-                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Spacer(modifier = Modifier.width(10.dp))
                                         Column {
                                             Text(
                                                 text = item.name,
-                                                fontWeight = FontWeight.Medium,
+                                                fontWeight = FontWeight.SemiBold,
                                                 fontSize = 14.sp,
                                                 color = TextPrimary
                                             )
                                             Text(
-                                                text = item.formattedSize,
+                                                text = "${item.formattedSize} • Saved to Downloads/FileSync",
                                                 fontSize = 11.sp,
-                                                color = TextSecondary
+                                                color = AccentGreen
                                             )
                                         }
                                     }
-                                    Text(
-                                        text = item.status,
-                                        fontSize = 12.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (item.status == "Completed") AccentGreen else SecondaryBlue
-                                    )
-                                }
-
-                                if (item.status == "InProgress") {
-                                    Spacer(modifier = Modifier.height(8.dp))
-                                    LinearProgressIndicator(
-                                        progress = { item.progress },
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(4.dp)
-                                            .clip(RoundedCornerShape(2.dp)),
-                                        color = SecondaryBlue,
-                                        trackColor = SurfaceDark
-                                    )
                                 }
                             }
                         }

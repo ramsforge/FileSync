@@ -1,9 +1,13 @@
 package com.filesync.app.ui
 
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Parcelable
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -11,6 +15,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.*
 import androidx.lifecycle.lifecycleScope
+import com.filesync.app.core.ReceivedItem
 import com.filesync.app.core.TransferItem
 import com.filesync.app.network.TransferSenderClient
 import com.filesync.app.service.TransferForegroundService
@@ -23,11 +28,20 @@ import java.io.File
 class MainActivity : ComponentActivity() {
 
     private val queue = mutableStateListOf<TransferItem>()
+    private val receivedFiles = mutableStateListOf<ReceivedItem>()
     private var isTransferring by mutableStateOf(false)
     private var currentSpeed by mutableStateOf("0 MB/s")
     private var totalProgress by mutableStateOf(0f)
     private var transferredText by mutableStateOf("0 MB / 0 MB")
     private var etaText by mutableStateOf("--")
+
+    private val fileReceivedReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val fileName = intent?.getStringExtra("FILE_NAME") ?: "New file"
+            refreshReceivedFiles()
+            Toast.makeText(this@MainActivity, "🎉 Received: $fileName in Downloads/FileSync", Toast.LENGTH_LONG).show()
+        }
+    }
 
     private val filePickerLauncher = registerForActivityResult(
         ActivityResultContracts.GetMultipleContents()
@@ -48,6 +62,15 @@ class MainActivity : ComponentActivity() {
             startService(serviceIntent)
         }
 
+        refreshReceivedFiles()
+
+        val filter = IntentFilter("com.filesync.ACTION_FILE_RECEIVED")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(fileReceivedReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            registerReceiver(fileReceivedReceiver, filter)
+        }
+
         // Handle Share Sheet intent if launched from another app
         handleIncomingIntent(intent)
 
@@ -55,6 +78,7 @@ class MainActivity : ComponentActivity() {
             FileSyncTheme {
                 HomeScreen(
                     queue = queue,
+                    receivedFiles = receivedFiles,
                     isTransferring = isTransferring,
                     currentSpeed = currentSpeed,
                     totalProgress = totalProgress,
@@ -73,6 +97,33 @@ class MainActivity : ComponentActivity() {
                     onCancelTransferClick = {
                         cancelTransfer()
                     }
+                )
+            }
+        }
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(fileReceivedReceiver)
+        } catch (_: Exception) {}
+        super.onDestroy()
+    }
+
+    private fun refreshReceivedFiles() {
+        receivedFiles.clear()
+        val baseDir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+            "FileSync"
+        )
+        if (baseDir.exists() && baseDir.isDirectory) {
+            baseDir.listFiles()?.filter { it.isFile }?.sortedByDescending { it.lastModified() }?.forEach { f ->
+                receivedFiles.add(
+                    ReceivedItem(
+                        name = f.name,
+                        path = f.absolutePath,
+                        size = f.length(),
+                        modifiedTime = f.lastModified()
+                    )
                 )
             }
         }
@@ -154,9 +205,9 @@ class MainActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             try {
-                // USB ADB tunnel connects to Windows port 45781 via adb reverse
+                // USB ADB tunnel connects to Windows port 45781 via adb reverse (port 45783)
                 val host = "127.0.0.1"
-                val port = 45781
+                val port = 45783
 
                 val success = client.sendFiles(host, port, queue.toList()) { percent, speed, fileName, transferred, total ->
                     totalProgress = percent / 100f

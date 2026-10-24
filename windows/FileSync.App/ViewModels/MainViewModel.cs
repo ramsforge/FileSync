@@ -111,13 +111,13 @@ public partial class MainViewModel : ObservableObject
             {
                 foreach (var dev in devices)
                 {
-                    if (!AvailableDevices.Any(d => d.EndPoint == "127.0.0.1:45780"))
+                    if (!AvailableDevices.Any(d => d.EndPoint == "127.0.0.1:45782"))
                     {
                         AvailableDevices.Insert(0, new PeerDevice
                         {
                             Name = $"Samsung Device ({dev})",
                             OsName = "Android",
-                            EndPoint = "127.0.0.1:45780",
+                            EndPoint = "127.0.0.1:45782",
                             ConnectionType = "USB ADB Tunnel"
                         });
                     }
@@ -152,10 +152,10 @@ public partial class MainViewModel : ObservableObject
     {
         StatusMessage = "Setting up ADB high-speed USB tunnels...";
         var forwardOk = await _adbService.SetupAdbForwardAsync(45782, 45780);
-        var reverseOk = await _adbService.SetupAdbReverseAsync(45781);
+        var reverseOk = await _adbService.SetupAdbReverseAsync(45783, 45781);
         if (forwardOk || reverseOk)
         {
-            StatusMessage = "ADB High-Speed USB Tunnels established (Forward: 45782, Reverse: 45781)!";
+            StatusMessage = "ADB High-Speed USB Tunnels established (Forward: 45782, Reverse: 45783)!";
             await CheckUsbDevicesAsync();
         }
         else
@@ -291,7 +291,9 @@ public partial class MainViewModel : ObservableObject
                     {
                         if (report.CurrentFileIndex >= 0 && report.CurrentFileIndex < Queue.Count)
                         {
-                            Queue[report.CurrentFileIndex].Progress = report.CurrentFileProgress;
+                            var qItem = Queue[report.CurrentFileIndex];
+                            qItem.Progress = report.CurrentFileProgress;
+                            qItem.Status = report.CurrentFileProgress >= 100.0 ? "Completed" : "InProgress";
                         }
                         TotalProgress = report.TotalProgress;
                         CurrentSpeedText = report.FormattedSpeed;
@@ -307,7 +309,22 @@ public partial class MainViewModel : ObservableObject
 
             if (success)
             {
-                StatusMessage = "Transfer completed successfully with bit-for-bit fidelity and exact timestamps!";
+                App.Current?.Dispatcher.Invoke(() =>
+                {
+                    foreach (var item in Queue)
+                    {
+                        item.Progress = 100.0;
+                        item.Status = "Completed";
+                    }
+                    TotalProgress = 100.0;
+                    StatusMessage = $"✅ Successfully transferred {Queue.Count} file(s) to Android!";
+                });
+
+                System.Windows.MessageBox.Show(
+                    $"Successfully transferred {Queue.Count} file(s) to your Android device!\n\nSaved to: Internal Storage > Download > FileSync",
+                    "FileSync Transfer Complete",
+                    System.Windows.MessageBoxButton.OK,
+                    System.Windows.MessageBoxImage.Information);
             }
         }
         catch (OperationCanceledException)

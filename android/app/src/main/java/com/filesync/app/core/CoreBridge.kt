@@ -65,3 +65,22 @@ data class TransferItem(
             return String.format("%.2f %s", len, units[order])
         }
 }
+
+data class ReceivedItem(
+    val name: String,
+    val path: String,
+    val size: Long,
+    val modifiedTime: Long
+) {
+    val formattedSize: String
+        get() {
+            val units = arrayOf("B", "KB", "MB", "GB", "TB")
+            var len = size.toDouble()
+            var order = 0
+            while (len >= 1024 && order < units.size - 1) {
+                order++
+                len /= 1024
+            }
+            return String.format("%.2f %s", len, units[order])
+        }
+}

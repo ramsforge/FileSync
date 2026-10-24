@@ -33,9 +33,26 @@ class TransferReceiverServer(private val context: Context) {
 
         serverThread = Thread({
             try {
-                serverSocket = ServerSocket(port).apply {
-                    reuseAddress = true
+                var bound = false
+                var attempts = 0
+                while (!bound && attempts < 10 && isRunning.get()) {
+                    try {
+                        serverSocket = ServerSocket().apply {
+                            reuseAddress = true
+                            bind(java.net.InetSocketAddress(port))
+                        }
+                        bound = true
+                    } catch (e: java.net.BindException) {
+                        attempts++
+                        Log.w(TAG, "Port $port busy, retrying in 1s (attempt $attempts)...")
+                        Thread.sleep(1000)
+                    }
                 }
+
+                if (!bound) {
+                    throw IllegalStateException("Failed to bind port $port after 10 attempts")
+                }
+
                 Log.i(TAG, "Transfer Receiver Server listening on port $port")
                 onStatusChanged?.invoke("Receiver listening on port $port...")
 

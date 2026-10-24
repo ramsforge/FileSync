@@ -79,14 +79,14 @@ public class AdbService
         }
     }
 
-    public async Task<bool> SetupAdbReverseAsync(int port = 45781)
+    public async Task<bool> SetupAdbReverseAsync(int remotePort = 45783, int localPort = 45781)
     {
         var adb = GetAdbPath();
         if (adb == null) return false;
 
         try
         {
-            var output = await RunAdbAsync($"reverse tcp:{port} tcp:{port}");
+            var output = await RunAdbAsync($"reverse tcp:{remotePort} tcp:{localPort}");
             return !output.Contains("error", StringComparison.OrdinalIgnoreCase);
         }
         catch
