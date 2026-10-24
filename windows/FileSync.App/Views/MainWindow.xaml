@@ -27,11 +27,7 @@
         </Grid.RowDefinitions>
 
         <!-- Window TitleBar -->
-        <ui:TitleBar Grid.Row="0" Title="FileSync - High Speed File Sharing" ShowMaximize="True" ShowMinimize="True">
-            <ui:TitleBar.Icon>
-                <ui:ImageIcon Source="pack://application:,,,/Assets/app.ico" />
-            </ui:TitleBar.Icon>
-        </ui:TitleBar>
+        <ui:TitleBar Grid.Row="0" Title="FileSync - High Speed File Sharing" ShowMaximize="True" ShowMinimize="True" />
 
         <!-- Device Connection Header -->
         <Border Grid.Row="1" Background="#18FFFFFF" CornerRadius="8" Margin="20,10,20,10" Padding="15,10">
