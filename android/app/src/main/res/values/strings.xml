@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">FileSync</string>
+    <string name="channel_name">File Transfer</string>
+    <string name="channel_desc">Active file transfer progress and speed</string>
+</resources>
