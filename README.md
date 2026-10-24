@@ -8,7 +8,7 @@
 
 - **Maximum Hardware Speed**: Saturates multi-gigabit LAN, Wi-Fi 6/7, and USB 3.x (5 Gbps+) interfaces.
 - **Strict Metadata Preservation**:
-  - Nanosecond timestamps (Creation, Modification, Access).
+  - Exact nanosecond timestamps (Creation, Modification, Access).
   - Directory tree replication.
   - Bidirectional mapping between Windows attributes (Hidden, Read-Only) and POSIX permissions.
 - **Bit-for-Bit Fidelity**: In-flight SIMD-accelerated BLAKE3 hashing on every chunk with instant deduplication and resume support.
@@ -33,21 +33,39 @@ FileSync/
 │   ├── src/discovery/          # mDNS & UDP broadcast discovery
 │   └── src/ffi/                # JNI & C-ABI bindings
 ├── android/                    # Android Native Client (Kotlin / Jetpack Compose)
+│   ├── app/src/main/java/      # Jetpack Compose UI, Foreground Service, Share Sheet target
+│   └── app/src/main/jniLibs/   # Staged libfilesync_core.so
 ├── windows/                    # Windows Native Client (WinUI 3 / .NET 9)
+│   ├── FileSync.App/           # Modern Fluent desktop UI with drag-and-drop
+│   └── FileSync.sln            # Visual Studio / .NET Solution
 └── scripts/                    # Build orchestration & dev setup scripts
+    ├── build_core.ps1          # Builds Rust core and stages DLL & .so files
+    └── setup_dev.ps1           # Verifies developer environment
 ```
 
 ---
 
-## Quick Start
+## Quick Start & Verification
 
 ### 1. Build Rust Core & Stage Binaries
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\build_core.ps1 -Configuration Release
 ```
 
-### 2. Run Test Suite
+### 2. Run Rust Core Test Suite
 ```powershell
 cd core
 cargo test
+```
+
+### 3. Build Windows App
+```powershell
+dotnet build windows\FileSync.sln -c Release
+```
+
+### 4. Build Android App
+Open `android/` in Android Studio or build via Gradle:
+```powershell
+cd android
+.\gradlew assembleDebug
 ```
