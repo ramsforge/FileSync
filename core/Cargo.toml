@@ -20,8 +20,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 crc32fast = "1.4"
 socket2 = "0.5"
-
-[target.'cfg(windows)'.dependencies]
+tempfile = "3.17"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Storage_FileSystem",
